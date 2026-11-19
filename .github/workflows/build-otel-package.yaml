@@ -3,8 +3,12 @@ name: build RabbitMQ.Client.OpenTelemetry package
 on:
   workflow_dispatch:
     inputs:
-      tag:
+      otel_tag:
         description: 'otel- tag to build, for example otel-1.0.0-rc.3'
+        required: true
+        type: string
+      client_tag:
+        description: 'RabbitMQ.Client tag on the same commit, for example v7.3.0'
         required: true
         type: string
 
@@ -17,21 +21,34 @@ jobs:
     # https://github.com/NuGet/Home/issues/11548
     env:
       NUGET_CERT_REVOCATION_MODE: offline
-      TAG: ${{ inputs.tag }}
+      OTEL_TAG: ${{ inputs.otel_tag }}
+      CLIENT_TAG: ${{ inputs.client_tag }}
     steps:
-      - name: Validate tag name
+      - name: Validate tag names
         shell: pwsh
         run: |
-          if ($env:TAG -notmatch '^otel-\d+\.\d+\.\d+(-rc\.\d+)?$') {
-            throw "'$env:TAG' is not an otel- release tag"
+          if ($env:OTEL_TAG -notmatch '^otel-\d+\.\d+\.\d+(-rc\.\d+)?$') {
+            throw "'$env:OTEL_TAG' is not an otel- release tag"
+          }
+          if ($env:CLIENT_TAG -notmatch '^v\d+\.\d+\.\d+$') {
+            throw "'$env:CLIENT_TAG' is not a vX.Y.Z release tag"
           }
       - name: Clone repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: refs/tags/${{ inputs.tag }}
+          ref: refs/tags/${{ inputs.otel_tag }}
           # MinVer needs the vX.Y.Z tag too, to version the RabbitMQ.Client dependency.
           fetch-depth: 0
           submodules: true
+      - name: Verify both tags are on the same commit
+        shell: pwsh
+        run: |
+          $clientCommit = git rev-parse --verify --quiet "refs/tags/$($env:CLIENT_TAG)^{commit}"
+          if ($LASTEXITCODE -ne 0) { throw "tag $env:CLIENT_TAG does not exist" }
+          $otelCommit = git rev-parse HEAD
+          if ($clientCommit -ne $otelCommit) {
+            throw "$env:OTEL_TAG is on $otelCommit but $env:CLIENT_TAG is on $clientCommit"
+          }
       - name: Setup .NET SDK
         uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
@@ -41,10 +58,8 @@ jobs:
       - name: Verify package version and RabbitMQ.Client dependency
         shell: pwsh
         run: |
-          $clientTag = git describe --tags --exact-match --match 'v*' HEAD
-          if ($LASTEXITCODE -ne 0) { throw "$env:TAG is not on a vX.Y.Z commit" }
-          $expectedClient = $clientTag -replace '^v', ''
-          $expectedVersion = $env:TAG -replace '^otel-', ''
+          $expectedClient = $env:CLIENT_TAG -replace '^v', ''
+          $expectedVersion = $env:OTEL_TAG -replace '^otel-', ''
           $nupkg = "packages/RabbitMQ.Client.OpenTelemetry.$expectedVersion.nupkg"
           if (-not (Test-Path $nupkg)) { throw "$nupkg was not produced" }
 
@@ -71,7 +86,7 @@ jobs:
       - name: Upload package
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: RabbitMQ.Client.OpenTelemetry-${{ inputs.tag }}
+          name: RabbitMQ.Client.OpenTelemetry-${{ inputs.otel_tag }}
           path: |
             packages/RabbitMQ.Client.OpenTelemetry.*.nupkg
             packages/RabbitMQ.Client.OpenTelemetry.*.snupkg
